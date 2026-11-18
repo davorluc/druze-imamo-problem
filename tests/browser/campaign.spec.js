@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 async function setRange(locator, value) {
   await locator.evaluate((input, value) => {
@@ -50,6 +51,11 @@ test('four real phone browsers win both missions via private instructions and li
   await host.reload();
   await expect(host.getByRole('button',{name:'Begin the operation'})).toBeEnabled();
   await host.screenshot({path:info.outputPath('lobby.png'),fullPage:true});
+  await host.locator('.playtest-panel summary').click();
+  await host.getByLabel('OBSERVER NOTE').fill('First squad playtest: watching radio controls');
+  await host.getByRole('button',{name:'Save timestamped note'}).click();
+  await expect(host.getByRole('status')).toContainText('Note saved.');
+  await host.locator('.playtest-panel summary').click();
   await host.getByRole('button',{name:'Begin the operation'}).click();
   for(let mission=0;mission<2;mission++) {
     await expect(phones[0].getByRole('heading',{name:'Your piece of the puzzle.'})).toBeVisible({timeout:20000});
@@ -112,6 +118,24 @@ test('four real phone browsers win both missions via private instructions and li
       await expect(phones[0].getByRole('button',{name:'Leave operation'})).toBeVisible();
     }
   }
+  await host.locator('.playtest-panel summary').click();
+  const dataDownload=host.waitForEvent('download');
+  await host.getByRole('button',{name:'Download data (.json)',exact:true}).click();
+  const data=await dataDownload;
+  const report=JSON.parse(await readFile(await data.path(),'utf8'));
+  expect(report.status).toBe('completed');
+  expect(report.summary.encounters).toBe(12);
+  expect(report.summary.successes).toBe(12);
+  expect(report.summary.failures).toBe(0);
+  expect(report.summary.score).toBe(3800);
+  expect(report.loadouts).toHaveLength(8);
+  expect(report.notes[0].text).toContain('watching radio controls');
+  expect(report.events.some(e=>e.type==='player_rejoined')).toBeTruthy();
+  const markdownDownload=host.waitForEvent('download');
+  await host.getByRole('button',{name:'Download report (.md)',exact:true}).click();
+  const markdown=await markdownDownload;
+  expect(await readFile(await markdown.path(),'utf8')).toContain('## Phase timings');
+  await host.screenshot({path:info.outputPath('playtest-report.png'),fullPage:true});
   expect(errors).toEqual([]);
   for(const context of contexts) await context.close();
 });

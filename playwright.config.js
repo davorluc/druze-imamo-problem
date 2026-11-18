@@ -6,7 +6,7 @@ export default defineConfig({
   workers: 1,
   use: { baseURL: 'http://127.0.0.1:3002', trace: 'retain-on-failure', screenshot: 'only-on-failure' },
   webServer: {
-    command: 'npm run build && PORT=3002 node server/index.js',
+    command: 'npm run build && PORT=3002 PLAYTEST_DIR=./test-results/playtest-logs node server/index.js',
     url: 'http://127.0.0.1:3002/api/health',
     reuseExistingServer: false,
     timeout: 60000,

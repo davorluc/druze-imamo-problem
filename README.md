@@ -91,6 +91,55 @@ Select **Quick drill** before creating a room for **5× faster timers**, includi
 
 Optional sound can be enabled with the music-note button. Browsers require a user gesture before playing synthesized field-radio cues; no copyrighted recordings are used.
 
+## Playtest logs and metrics
+
+Every **new operation** now records server-observed events automatically. Nothing is sent to an analytics service and no database is required. Earlier playtests cannot be reconstructed retroactively.
+
+### During or after a playtest
+
+On the **host screen**, open **“Playtest tools · logs & metrics”** below the main game area:
+
+- **Refresh metrics** shows current encounter results, timeouts, incorrect answers, rejected commands, disconnects, and score. These are a snapshot, not a constantly updating dashboard.
+- **Save timestamped note** attaches an observation to the current mission, phase, and active encounter. Example: “Reader understood the frequency but operator couldn’t find Transmit.” Notes are limited to 500 characters each and 100 per operation.
+- **Download report (.md)** produces a human-readable summary with phase timings, loadouts, encounter response times, outcomes, and connection history.
+- **Download data (.json)** includes the same metrics plus the complete retained, timestamped event timeline for deeper analysis.
+
+Reports are **host-only** and available from the lobby onward, including incomplete sessions. Download before choosing “Back to command” or closing the host session if you want the browser copy. Phones cannot retrieve reports or submit observer notes.
+
+### Automatic disk copies
+
+The server writes these files outside the publicly served folder:
+
+```text
+playtests/<session-uuid>.jsonl   Append-only, ordered event log
+playtests/<session-uuid>.json    Latest structured report checkpoint
+playtests/<session-uuid>.md      Latest human-readable report checkpoint
+```
+
+The session UUID distinguishes repeated room codes. Reports checkpoint about every **5 seconds**, and also on export, saved notes, final mission resolution, room expiry, and graceful server shutdown. Writes are queued off the gameplay path. A hard crash/power failure may lose queued writes and the latest few seconds of report checkpoints; disk logs are not a game save or automatic game recovery system.
+
+Change the storage directory with an absolute path if desired:
+
+```sh
+PLAYTEST_DIR=/path/to/playtests npm run dev
+# or: PLAYTEST_DIR=/path/to/playtests npm start
+```
+
+The default `playtests/` directory is ignored by Git. **Files survive server restarts**, but there is no in-app archive browser yet: open the files directly after a restart. Back up reports you want to keep. There is no automatic disk retention/deletion; remove old session files manually.
+
+### What the numbers mean
+
+- Durations and response times use **real wall-clock milliseconds**. Drill speed is recorded separately, so do not compare drill reaction times directly with normal-timer runs.
+- Gameplay duration excludes the lobby and stops at final mission resolution. Phase timing records actual durations, including early planning completion; final debrief dwell time is excluded after completion.
+- First action is the first observed submission or hold press, not the time someone first read or understood the prompt. First submission excludes holds. Medkit treatments are standalone support events.
+- Wrong answers count failed answer checks. An incorrect verifier PIN, acting before the lookout is ready, a stale encounter action, or another invalid command is a **rejected command**, not a wrong answer. A wrong answer can also generate a rejection response, so these counts are not mutually exclusive. Rate-limit rejections are not instrumented.
+- Encounter failures distinguish **timeout**, **missing gear**, **wrong route**, **three incorrect attempts**, and phase-end expiry; successful flare bypasses are labeled separately. Empty-route obstacles are logged as avoided, not failed.
+- Disconnect counts and downtime cover the play interval (through completion/closure). Rejoining while already connected is recorded as a controller takeover, not an outage. Host connection events are recorded separately.
+- The in-memory/downloadable timeline retains up to **10,000 events** per operation. Reports explicitly flag dropped events and become incomplete beyond this limit; the disk JSONL continues recording. Observer notes are rejected once the memory limit is reached.
+- Disk errors never stop gameplay. The host tools show a disk-logging error warning; download the in-memory report immediately. The warning remembers any write failure during the server’s lifetime because an earlier event may have been lost, even if subsequent writes succeed.
+
+Logs contain player **codenames** and internal player IDs, but **not** reconnect/host tokens, IP addresses, private intel, randomized answers, PINs, or submitted answer values. Notes are free text: do not enter sensitive information. Treat exported files as playtest data rather than a public game artifact, and tell participants you are recording gameplay metrics. Metrics cannot establish whether someone was confused, distracted, speaking, or reading—use observer notes and player feedback for that.
+
 ## Verification
 
 ```sh

@@ -1,10 +1,11 @@
 import { randomInt, randomUUID } from 'node:crypto';
+import { Playtest } from './playtest.js';
 import { MISSIONS, GEAR, PHASE_SECONDS, COLORS, PLAYER_COLORS } from '../shared/content.js';
 
 const choose = (xs) => xs[randomInt(xs.length)];
 const requireThat = (condition, message) => { if (!condition) throw new Error(message); };
 export class Game {
-  constructor(code, { speed = 1, now = Date.now } = {}) {
+  constructor(code, { speed = 1, now = Date.now, onRecord } = {}) {
     this.code = code;
     this.hostToken = randomUUID();
     this.speed = speed;
@@ -19,27 +20,40 @@ export class Game {
     this.log = [];
     this.updatedAt = now();
     this.hostConnected = false;
+    this.playtest = new Playtest({ code, speed, now, onRecord });
+    this.record('session_created', { schemaVersion: 1, sessionId: this.playtest.id, roomCode: code, speed, phaseSeconds: { ...PHASE_SECONDS } });
+    this.record('phase_entered');
+  }
+  record(type, details = {}) { this.playtest.record(type, { missionIndex: this.missionIndex, phase: this.phase, ...details }); }
+  setHostConnected(connected, reason = '') {
+    if (this.hostConnected !== connected) this.record('host_connection', { connected, reason });
+    this.hostConnected = connected;
   }
   get mission() { return MISSIONS[this.missionIndex]; }
   get duration() { return PHASE_SECONDS[this.phase] * 1000 * this.speed; }
   get gearPool() { return GEAR.filter(g => g.id !== 'medkit' || this.players.length >= 5); }
   join(name, token) {
     const existing = this.players.find(p => p.token === token);
-    if (existing) { existing.connected = true; return existing; }
+    if (existing) { this.record('player_rejoined', { playerId: existing.id, wasConnected: existing.connected }); existing.connected = true; return existing; }
     requireThat(this.phase === 'LOBBY', 'This operation has already started. Rejoin from your original browser.');
     requireThat(this.players.length < 6, 'This squad is full (6 comrades maximum).');
     requireThat(typeof name === 'string' && name.trim().length >= 2 && name.trim().length <= 18, 'Use a codename of 2–18 characters.');
     requireThat(!this.players.some(p => p.name.toLowerCase() === name.trim().toLowerCase()), 'That codename is already in use.');
     const player = { id: randomUUID(), token: randomUUID(), name: name.trim(), connected: true, ready: false, route: null, gear: null, locked: false, wounded: false, used: false, contributions: 0, clues: [], color: PLAYER_COLORS.find(color => !this.players.some(p => p.color === color)) };
     this.players.push(player);
+    this.record('player_joined', { playerId: player.id, name: player.name });
     return player;
   }
-  disconnect(id) {
+  disconnect(id, reason = 'transport_disconnect') {
     const p = this.players.find(p => p.id === id);
-    if (p) { p.connected = false; if (this.event?.holds) delete this.event.holds[id]; }
+    if (p) {
+      if (p.connected) this.record('player_disconnected', { playerId: id, reason, eventId: this.event?.id ?? null });
+      p.connected = false; if (this.event?.holds) delete this.event.holds[id];
+    }
   }
   remove(id) {
     requireThat(this.phase === 'LOBBY', 'The roster is locked during an operation.');
+    if (this.players.some(p => p.id === id)) this.record('player_removed', { playerId: id });
     this.players = this.players.filter(p => p.id !== id);
   }
   start() {
@@ -49,10 +63,12 @@ export class Game {
   }
   enter(phase) {
     this.phase = phase;
+    this.record('phase_entered');
     this.startedAt = this.now();
     this.deadline = this.startedAt + this.duration;
     if (phase === 'BRIEFING') {
       this.alert = this.missionIndex && !this.results[0]?.success ? 25 : 0;
+      this.record('mission_started', { missionId: this.mission.id, title: this.mission.title, playerCount: this.players.length, startingAlert: this.alert });
       this.event = null;
       this.eventsDone = [];
       this.log = [];
@@ -64,9 +80,11 @@ export class Game {
     }
     if (phase === 'NIGHT_ACTION') {
       for (const p of this.players) {
+        const autoAssigned = !p.locked;
         p.route ||= this.mission.routes[this.players.indexOf(p) % 3].id;
         if (!p.gear) p.gear = this.gearPool.find(g => !this.players.some(other => other.gear === g.id))?.id;
         p.locked = true;
+        if (autoAssigned) this.record('loadout_locked', { playerId: p.id, route: p.route, gear: p.gear, automatic: true });
       }
       this.addLog('Nightfall. Keep your voices low and your phones close.');
     }
@@ -75,7 +93,7 @@ export class Game {
   advance() {
     if (this.phase === 'BRIEFING') this.enter('DAY_PLANNING');
     else if (this.phase === 'DAY_PLANNING') this.enter('NIGHT_ACTION');
-    else if (this.phase === 'NIGHT_ACTION') { if (this.event) this.resolveEvent(false); this.enter('DEBRIEF'); }
+    else if (this.phase === 'NIGHT_ACTION') { if (this.event) this.resolveEvent(false, '', 'phase_ended'); this.enter('DEBRIEF'); }
     else if (this.phase === 'DEBRIEF' && this.missionIndex === 0) { this.missionIndex = 1; this.enter('BRIEFING'); }
   }
   plan(id, { route, gear, lock }) {
@@ -86,6 +104,7 @@ export class Game {
     requireThat(this.gearPool.some(g => g.id === gear), 'Choose a gear item.');
     requireThat(!this.players.some(other => other.id !== id && other.gear === gear), 'Another comrade has taken that item. Choose another.');
     p.route = route; p.gear = gear; p.locked = Boolean(lock);
+    this.record(p.locked ? 'loadout_locked' : 'loadout_selected', { playerId: id, route, gear, automatic: false });
     if (this.players.every(p => p.locked)) this.enter('NIGHT_ACTION');
   }
   tick() {
@@ -96,7 +115,7 @@ export class Game {
         const e = this.event;
         if (e.participants?.length && e.participants.every(id => e.holds[id] !== undefined && now - e.holds[id] >= 3000 * this.speed && e.holds[id] + 3000 * this.speed <= e.deadline)) {
           if (e.spec.type === 'hold') this.resolveEvent(true);
-          else e.lookoutDone = true;
+          else if (!e.lookoutDone) { e.lookoutDone = true; this.record('lookout_completed', { eventId: e.id, participants: [...e.participants] }); }
         }
         if (this.event && now >= this.event.deadline) this.resolveEvent(false);
       }
@@ -109,7 +128,7 @@ export class Game {
   addLog(text) { this.log.unshift({ text, at: this.now() }); this.log = this.log.slice(0, 8); }
   createEvent(spec) {
     this.eventsDone.push(spec.id);
-    if (spec.route && !this.players.some(p => p.route === spec.route)) { this.addLog(`${spec.title}: route clear. Obstacle avoided.`); return; }
+    if (spec.route && !this.players.some(p => p.route === spec.route)) { this.record('encounter_avoided', { obstacleId: spec.id, title: spec.title, route: spec.route }); this.addLog(`${spec.title}: route clear. Obstacle avoided.`); return; }
     const operator = this.players.find(p => p.gear === spec.gear) || choose(this.players);
     const others = this.players.filter(p => p.id !== operator.id);
     const reader = choose(others);
@@ -130,28 +149,32 @@ export class Game {
       event.operator = choose(this.players.filter(p => p.id !== event.reader)).id;
     }
     this.event = event;
+    this.record('encounter_started', { eventId: event.id, obstacleId: spec.id, title: spec.title, encounterType: spec.type, final: Boolean(spec.final), operator: event.operator, reader: event.reader, verifier: event.verifier ?? null, participants: [...event.participants], windowMs: 14000 * this.speed, missingGear: event.missingGear, alertBefore: this.alert });
     this.addLog(spec.title);
-    if (event.missingGear && (spec.final || !this.players.some(p => p.gear === 'flare_gun' && !p.used))) this.resolveEvent(false, 'Required gear was left behind.');
-    else if (spec.requiredRoute && operator.route !== spec.requiredRoute) this.resolveEvent(false, 'The charge carrier did not take the riverbed.');
+    if (event.missingGear && (spec.final || !this.players.some(p => p.gear === 'flare_gun' && !p.used))) this.resolveEvent(false, 'Required gear was left behind.', 'missing_gear');
+    else if (spec.requiredRoute && operator.route !== spec.requiredRoute) this.resolveEvent(false, 'The charge carrier did not take the riverbed.', 'wrong_route');
   }
   act(id, data) {
     const p = this.players.find(p => p.id === id);
     requireThat(p && this.phase === 'NIGHT_ACTION', 'No active field operation.');
     if (data.kind === 'medkit') {
+      this.record('action_submitted', { playerId: id, eventId: null, kind: 'medkit' });
       requireThat(p.gear === 'medkit' && !p.used, 'No field treatment remaining.');
       const target = this.players.find(x => x.id === data.target && x.wounded);
       requireThat(target, 'Select a wounded comrade.');
-      target.wounded = false; p.used = true; p.contributions++; this.addLog(`${p.name} treated ${target.name}.`); return;
+      target.wounded = false; p.used = true; p.contributions++; this.record('medkit_used', { playerId: id, targetId: target.id }); this.addLog(`${p.name} treated ${target.name}.`); return;
     }
     const e = this.event;
     requireThat(e && data.eventId === e.id, 'That obstacle has already ended.');
     requireThat(this.now() < e.deadline, 'Too late. The obstacle window has closed.');
+    if (data.kind !== 'hold') this.record('action_submitted', { playerId: id, eventId: e.id, kind: data.kind === 'flare' ? 'flare' : 'submission' });
     if (data.kind === 'flare') {
       requireThat(p.gear === 'flare_gun' && !p.used && !e.spec.final, 'The flare is unavailable for this obstacle.');
-      p.used = true; p.contributions++; this.alert = Math.max(0, this.alert - 5); this.resolveEvent(true, 'Emergency flare deployed.'); return;
+      p.used = true; p.contributions++; this.alert = Math.max(0, this.alert - 5); this.resolveEvent(true, 'Emergency flare deployed.', 'flare'); return;
     }
     if (data.kind === 'hold') {
       requireThat(e.participants.includes(id), 'You are not assigned to this hold.');
+      if (Boolean(data.down) !== (e.holds[id] !== undefined)) this.record('hold_changed', { playerId: id, eventId: e.id, down: Boolean(data.down) });
       if (data.down && !e.holds[id]) e.holds[id] = this.now();
       if (!data.down) delete e.holds[id];
       return;
@@ -165,25 +188,28 @@ export class Game {
     if (e.spec.type === 'radio') correct = Number(data.value) === e.target;
     if (e.spec.type === 'sniper') correct = Number(data.x) === e.target.x && Number(data.y) === e.target.y;
     if (e.spec.type === 'interrupt') correct = data.value === e.warning;
+    this.record('answer_checked', { playerId: id, eventId: e.id, correct });
     if (correct) {
       new Set([e.operator, e.reader, e.verifier, ...e.participants].filter(Boolean)).forEach(pid => this.players.find(p => p.id === pid).contributions++);
       this.resolveEvent(true);
     } else {
       e.attempts++; this.alert = Math.min(100, this.alert + 5);
-      if (e.attempts >= 3) this.resolveEvent(false, 'Three incorrect attempts.');
+      if (e.attempts >= 3) this.resolveEvent(false, 'Three incorrect attempts.', 'incorrect_attempts');
       else throw new Error(`Incorrect. ${3 - e.attempts} attempts left. Ask your reader!`);
     }
   }
-  resolveEvent(success, reason = '') {
+  resolveEvent(success, reason = '', cause = success ? 'completed' : 'timeout') {
     const e = this.event;
     if (!e) return;
     if (success && e.spec.type === 'hold') e.participants.forEach(id => this.players.find(p => p.id === id).contributions++);
+    let woundedPlayerId = null;
     if (!success) {
       const discount = this.missionIndex === 1 && this.results[0]?.success ? 5 : 0;
       this.alert = Math.min(100, this.alert + Math.max(0, e.spec.penalty - discount));
       const victim = this.players.find(p => p.id === e.operator && !p.wounded) || this.players.find(p => !p.wounded);
-      if (victim) victim.wounded = true;
+      if (victim) { victim.wounded = true; woundedPlayerId = victim.id; }
     }
+    this.record('encounter_resolved', { eventId: e.id, obstacleId: e.spec.id, success, cause, reason: reason || (success ? 'Completed.' : 'Action window expired.'), attempts: e.attempts, alertAfter: this.alert, woundedPlayerId });
     this.log.unshift({ text: `${success ? 'SUCCESS' : 'FAILED'} · ${e.spec.title}${reason ? ` — ${reason}` : ''}`, at: this.now() });
     this.log = this.log.slice(0, 8);
     this.outcomes ||= [];
@@ -198,6 +224,7 @@ export class Game {
     const success = objective && this.alert < 100 && cleared >= Math.ceil(outcomes.length / 2);
     const score = Math.max(0, cleared * 150 + (success ? 500 : 0) + (100 - this.alert) * 5 - wounded * 75);
     this.results[this.missionIndex] = { success, score, alert: this.alert, wounded, cleared, total: outcomes.length, objective };
+    this.record('mission_finished', { result: { ...this.results[this.missionIndex] } });
     if (this.missionIndex === 1) this.deadline = null;
   }
   snapshot(playerId = null) {
