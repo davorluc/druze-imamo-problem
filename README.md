@@ -85,6 +85,14 @@ A mission succeeds if the final objective is completed, alert is below 100%, and
 
 A successful prep raid reduces viaduct obstacle-failure penalties by 5. A failed prep raid starts the viaduct at 25% alert. Neither outcome prevents the second mission from being played.
 
+### Keeping phone screens awake
+
+Joined phone controllers automatically request a **Screen Wake Lock** from the lobby through both missions, releasing it when the player leaves or reaches the final report. The controller shows whether stay-awake is active. Returning from another app/tab reacquires it where supported; if the browser blocks or releases it, use **Retry screen stay-awake**.
+
+**This API requires a secure context:** HTTPS (or localhost for development). Your phone visiting `http://HOST-LAN-IP:5173` is **not** a secure context, even on the same Wi-Fi. For a plain-HTTP LAN playtest, the controller shows a reminder to extend the phone’s screen timeout/Auto-Lock manually. For automatic stay-awake on physical phones, serve the game over HTTPS with a certificate those phones trust. An untrusted/self-signed certificate warning is not a reliable substitute.
+
+Keep the controller **foregrounded**. Wake-lock does not prevent manual locking, switching apps, browser suspension, or network loss, and battery-saving/device policies can override it. It is best-effort, not a guarantee. There are no fake-video/audio keep-awake workarounds.
+
 ### Quick drill
 
 Select **Quick drill** before creating a room for **5× faster timers**, including 0.6-second holds and 2.8-second encounter windows. This is intentionally brisk: use it for smoke tests, not a first playthrough.
