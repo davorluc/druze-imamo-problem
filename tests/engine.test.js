@@ -99,6 +99,57 @@ test('public snapshots do not expose intel, tokens, randomized answers or authen
   assert.equal(reader.me.clues.length, 2);
 });
 
+test('host and phone snapshots show the latest encounter success until the next mission', () => {
+  const { game, advance } = squad();
+  assert.equal(game.snapshot().lastEncounterResult, null);
+  game.start(); game.advance(); loadout(game);
+  const [first, second] = MISSIONS[0].obstacles;
+  advance(first.at * 1000);
+  const { id, operator } = game.event;
+  assert.equal(game.snapshot(operator).lastEncounterResult, null);
+  solve(game, advance);
+  const result = { id, title: first.title, success: true, reason: '', at: game.now() };
+  assert.equal(game.snapshot().event, null);
+  assert.deepEqual(game.snapshot().lastEncounterResult, result);
+  assert.deepEqual(game.snapshot(operator).lastEncounterResult, result);
+  advance((second.at - first.at) * 1000);
+  assert.ok(game.snapshot().event);
+  assert.deepEqual(game.snapshot().lastEncounterResult, result);
+  solve(game, advance);
+  game.advance();
+  assert.ok(game.snapshot().lastEncounterResult);
+  game.advance();
+  assert.equal(game.snapshot().missionIndex, 1);
+  assert.equal(game.snapshot().lastEncounterResult, null);
+  assert.equal(game.snapshot(operator).lastEncounterResult, null);
+});
+
+test('encounter timeout and night end expose distinct feedback without changing reports or logs', () => {
+  const { game, advance } = squad();
+  game.start(); game.advance(); loadout(game);
+  const [first, second] = MISSIONS[0].obstacles;
+  advance(first.at * 1000);
+  const timedOut = game.event;
+  advance(timedOut.deadline - game.now());
+  assert.deepEqual(game.snapshot().lastEncounterResult, {
+    id: timedOut.id, title: first.title, success: false, reason: 'Time ran out.', at: timedOut.deadline,
+  });
+  assert.deepEqual(game.log[0], { text: `FAILED · ${first.title}`, at: timedOut.deadline });
+
+  advance(game.startedAt + second.at * 1000 - game.now());
+  const interrupted = game.event;
+  game.advance();
+  assert.equal(game.phase, 'DEBRIEF');
+  assert.deepEqual(game.snapshot(interrupted.operator).lastEncounterResult, {
+    id: interrupted.id, title: second.title, success: false, reason: 'Night phase ended.', at: game.now(),
+  });
+  assert.equal(game.log[0].text, `FAILED · ${second.title}`);
+  assert.deepEqual(game.playtest.events.filter(e => e.type === 'encounter_resolved').map(({ cause, reason }) => ({ cause, reason })), [
+    { cause: 'timeout', reason: 'Action window expired.' },
+    { cause: 'phase_ended', reason: 'Action window expired.' },
+  ]);
+});
+
 test('holds require every participant simultaneously; release and disconnect reset progress', () => {
   const { game, advance } = squad();
   game.start(); game.advance();
@@ -132,6 +183,7 @@ test('failures cause wounds and alert, flare is single-use, medic heals once', (
   const flare = game.players.find(p=>p.gear==='flare_gun');
   game.createEvent(spec); game.act(flare.id,{kind:'flare',eventId:game.event.id});
   assert.equal(game.event,null); assert.equal(flare.used,true);
+  assert.equal(game.snapshot().lastEncounterResult.reason, 'Emergency flare deployed.');
   game.createEvent(spec);
   assert.throws(()=>game.act(flare.id,{kind:'flare',eventId:game.event.id}),/unavailable/);
 });
@@ -154,6 +206,7 @@ test('wrong answers incur alert and three failures close a panel; stale actions 
   for(let i=0;i<2;i++) assert.throws(()=>game.act(e.operator,{kind:'submit',eventId:e.id,value:-1}),/attempts left/);
   game.act(e.operator,{kind:'submit',eventId:e.id,value:-1});
   assert.equal(game.event,null); assert.equal(game.alert,30);
+  assert.equal(game.snapshot().lastEncounterResult.reason, 'Three incorrect attempts.');
   assert.throws(()=>game.act(e.operator,{kind:'submit',eventId:e.id,value:e.target}),/already ended/);
 });
 

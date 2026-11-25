@@ -6,7 +6,7 @@ test('six phones cooperate on a calibration with a second reader and lookout',as
   await host.getByRole('button',{name:'Establish an operation'}).click();
   const code=await host.locator('.room-code').innerText();
   for(let i=0;i<6;i++) {
-    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});contexts.push(context);
+    const context=await browser.newContext({viewport:{width:360,height:640},isMobile:true,hasTouch:true});contexts.push(context);
     const phone=await context.newPage();phones.push(phone);phone.on('pageerror',e=>errors.push(e.message));
     await phone.goto(`/play?room=${code}`);await phone.getByLabel('YOUR CODENAME').fill(`Comrade ${i+1}`);
     await phone.getByRole('button',{name:'Join the resistance'}).click();await phone.getByRole('button',{name:'I’m ready'}).click();
@@ -30,21 +30,44 @@ test('six phones cooperate on a calibration with a second reader and lookout',as
   const frequency=Number(assignments[reader].match(/([\d.]+) MHz/)[1]);
   const pin=assignments[verifier].match(/code: (\d+)/)[1];
   const op=phones[operator];
+  const transmit=op.getByRole('button',{name:'Transmit identification'});
+  const lookoutName=`Comrade ${lookout+1}`;
+  await expect(host.locator('.event-assignments')).toContainText(`LOOKOUT${lookoutName}`);
+  await expect(op.locator('.phone-event h1')).toBeInViewport({ratio:1});
+  await expect(transmit).toBeInViewport({ratio:1});
+  await expect(transmit).toBeDisabled();
+  await expect(op.locator('.cover-status')).toContainText(`Waiting for ${lookoutName}`);
   await op.locator('#pin').fill(pin);
   await op.locator('#frequency').evaluate((input,value)=>{
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,String(value));
     input.dispatchEvent(new Event('input',{bubbles:true}));
   },Math.round(frequency*10));
-  const hold=phones[lookout].locator('.hold-button');await hold.scrollIntoViewIfNeeded();
+  const hold=phones[lookout].locator('.hold-button');
+  await expect(hold).toBeInViewport({ratio:1});
   const box=await hold.boundingBox();await phones[lookout].mouse.move(box.x+box.width/2,box.y+box.height/2);await phones[lookout].mouse.down();
   await expect(hold).toContainText('COVER SECURED');
   await phones[lookout].mouse.up();
-  await op.getByRole('button',{name:'Transmit identification'}).click();
+  await expect(op.locator('.cover-status')).toContainText('Cover secured');
+  await expect(transmit).toBeEnabled();
+  await transmit.click();
   await expect(host.locator('.live-event')).toBeHidden();
+  for(const screen of [host,op]) {
+    const result=screen.locator('.encounter-result.cleared');
+    await expect(result).toContainText('PATROL CHECK-IN');
+    await expect(result).toBeInViewport({ratio:1});
+  }
   await expect(host.locator('.field-log')).toContainText('SUCCESS · PATROL CHECK-IN');
   await expect(host.locator('.alert-heading strong')).toHaveText('0%');
   for(const p of phones) { await expect(p.getByRole('alert')).toHaveCount(0);expect(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy(); }
   expect(errors).toEqual([]);
   await host.screenshot({path:info.outputPath('six-player-night.png'),fullPage:true});
+  await expect(op.locator('.phone-idle')).toBeVisible();
+  await expect(host.locator('.live-event')).toContainText('COURTYARD ALARM');
+  for(const screen of [host,op]) {
+    const result=screen.locator('.encounter-result.failed');
+    await expect(result).toContainText('COURTYARD ALARM');
+    await expect(result).toContainText('Time ran out.');
+    await expect(result).toBeInViewport({ratio:1});
+  }
   for(const c of contexts)await c.close();
 });

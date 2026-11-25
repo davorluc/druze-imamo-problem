@@ -16,6 +16,7 @@ export class Game {
     this.results = [];
     this.alert = 0;
     this.event = null;
+    this.lastEncounterResult = null;
     this.eventsDone = [];
     this.log = [];
     this.updatedAt = now();
@@ -70,6 +71,7 @@ export class Game {
       this.alert = this.missionIndex && !this.results[0]?.success ? 25 : 0;
       this.record('mission_started', { missionId: this.mission.id, title: this.mission.title, playerCount: this.players.length, startingAlert: this.alert });
       this.event = null;
+      this.lastEncounterResult = null;
       this.eventsDone = [];
       this.log = [];
       const clueCount = this.players.length === 5 ? 10 : 12;
@@ -210,7 +212,12 @@ export class Game {
       if (victim) { victim.wounded = true; woundedPlayerId = victim.id; }
     }
     this.record('encounter_resolved', { eventId: e.id, obstacleId: e.spec.id, success, cause, reason: reason || (success ? 'Completed.' : 'Action window expired.'), attempts: e.attempts, alertAfter: this.alert, woundedPlayerId });
-    this.log.unshift({ text: `${success ? 'SUCCESS' : 'FAILED'} · ${e.spec.title}${reason ? ` — ${reason}` : ''}`, at: this.now() });
+    const at = this.now();
+    this.lastEncounterResult = {
+      id: e.id, title: e.spec.title, success,
+      reason: reason || (success ? '' : cause === 'phase_ended' ? 'Night phase ended.' : 'Time ran out.'), at,
+    };
+    this.log.unshift({ text: `${success ? 'SUCCESS' : 'FAILED'} · ${e.spec.title}${reason ? ` — ${reason}` : ''}`, at });
     this.log = this.log.slice(0, 8);
     this.outcomes ||= [];
     this.outcomes.push({ mission: this.missionIndex, id: e.spec.id, success });
@@ -248,6 +255,7 @@ export class Game {
       players: this.players.map(({ token, clues, ...safe }) => safe),
       me: p ? { ...this.players.map(({ token, ...safe }) => safe).find(x => x.id === p.id), assignment } : null,
       event: e ? { id: e.id, type: e.spec.type, title: e.spec.title, prompt: e.missingGear ? 'Required equipment missing. Deploy an emergency flare!' : e.spec.prompt, final: Boolean(e.spec.final), deadline: e.deadline, operator: e.operator, reader: e.reader, verifier: e.verifier, participants: e.participants, holds: Object.keys(e.holds), lookoutDone: e.lookoutDone, attempts: e.attempts } : null,
+      lastEncounterResult: this.lastEncounterResult,
       log: this.log, results: this.results,
     };
   }
